@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>YOLO26L Worker Tracker</title>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+<style>
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+body{
+    background:#0d1117;
+    color:#e6edf3;
+    font-family:Arial;
+    padding:20px;
+}
+
+.topbar{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:20px;
+}
+
+.title{
+    font-size:28px;
+    font-weight:bold;
+    color:#58a6ff;
+}
+
+.badge{
+    background:#161b22;
+    border:1px solid #30363d;
+    padding:8px 14px;
+    border-radius:8px;
+    font-size:14px;
+}
+
+.metrics{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:15px;
+    margin-bottom:20px;
+}
+
+.card{
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:12px;
+    padding:18px;
+}
+
+.card h3{
+    color:#8b949e;
+    font-size:13px;
+    margin-bottom:10px;
+}
+
+.card .value{
+    font-size:34px;
+    font-weight:bold;
+}
+
+.blue{color:#58a6ff;}
+.green{color:#3fb950;}
+.yellow{color:#d29922;}
+.red{color:#f85149;}
+
+.worker-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+    gap:15px;
+    margin-bottom:20px;
+}
+
+.worker{
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:12px;
+    padding:15px;
+    transition:0.3s;
+}
+
+.worker.active{
+    border-color:#3fb950;
+}
+
+.worker.idle{
+    border-color:#d29922;
+}
+
+.worker.alarm{
+    border-color:#f85149;
+    animation:blink 1s infinite;
+}
+
+@keyframes blink{
+    50%{
+        opacity:0.6;
+    }
+}
+
+.worker-id{
+    font-size:20px;
+    font-weight:bold;
+    color:#58a6ff;
+    margin-bottom:8px;
+}
+
+.worker-zone{
+    color:#8b949e;
+    margin-bottom:10px;
+}
+
+.status{
+    display:inline-block;
+    padding:5px 10px;
+    border-radius:20px;
+    font-size:12px;
+    margin-bottom:10px;
+}
+
+.status.active{
+    background:#1f6f3d;
+}
+
+.status.idle{
+    background:#7c5c00;
+}
+
+.status.alarm{
+    background:#8b0000;
+}
+
+.timer{
+    margin-top:10px;
+    font-size:14px;
+}
+
+.progress{
+    width:100%;
+    height:6px;
+    background:#30363d;
+    border-radius:6px;
+    overflow:hidden;
+    margin-top:10px;
+}
+
+.progress-bar{
+    height:100%;
+    transition:1s linear;
+}
+
+.log{
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:12px;
+    padding:15px;
+}
+
+.log-title{
+    font-size:18px;
+    margin-bottom:10px;
+    color:#58a6ff;
+}
+
+.log-entry{
+    padding:8px 0;
+    border-bottom:1px solid #30363d;
+    font-size:14px;
+}
+
+.log-entry:last-child{
+    border-bottom:none;
+}
+
+.alarm-banner{
+    background:#5c1111;
+    border:1px solid #f85149;
+    padding:15px;
+    border-radius:10px;
+    margin-bottom:20px;
+    display:none;
+    align-items:center;
+    justify-content:space-between;
+}
+
+.alarm-banner.show{
+    display:flex;
+}
+
+.mute-btn{
+    background:none;
+    border:1px solid #f85149;
+    color:#f85149;
+    padding:8px 12px;
+    border-radius:6px;
+    cursor:pointer;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="topbar">
+
+    <div class="title">
+        Construction Worker Tracker
+    </div>
+
+    <div class="badge" id="device-info">
+        Detecting GPU...
+    </div>
+
+</div>
+
+<div class="metrics">
+
+    <div class="card">
+        <h3>Workers</h3>
+        <div class="value blue" id="total-workers">0</div>
+    </div>
+
+    <div class="card">
+        <h3>Active</h3>
+        <div class="value green" id="active-workers">0</div>
+    </div>
+
+    <div class="card">
+        <h3>Idle</h3>
+        <div class="value yellow" id="idle-workers">0</div>
+    </div>
+
+    <div class="card">
+        <h3>Alarms</h3>
+        <div class="value red" id="alarm-workers">0</div>
+    </div>
+
+</div>
+
+<div class="alarm-banner" id="alarm-banner">
+
+    <div id="alarm-text">
+        Worker Idle Alarm
+    </div>
+
+    <button class="mute-btn" onclick="toggleMute()">
+        Mute
+    </button>
+
+</div>
+
+<div class="worker-grid" id="worker-grid"></div>
+
+<div class="log">
+
+    <div class="log-title">
+        Event Log
+    </div>
+
+    <div id="log-list"></div>
+
+</div>
+
+<script>
+
+const socket = io();
+
+let muted = false;
+let totalAlarms = 0;
+
+function addLog(msg){
+
+    const log = document.getElementById("log-list");
+
+    const div = document.createElement("div");
+
+    div.className = "log-entry";
+
+    const t = new Date().toLocaleTimeString();
+
+    div.innerHTML = `[${t}] ${msg}`;
+
+    log.prepend(div);
+
+    if(log.children.length > 20){
+        log.removeChild(log.lastChild);
+    }
+}
+
+function speak(text){
+
+    if(muted) return;
+
+    if(window.speechSynthesis){
+
+        speechSynthesis.cancel();
+
+        const utter = new SpeechSynthesisUtterance(text);
+
+        utter.rate = 1;
+
+        speechSynthesis.speak(utter);
+    }
+}
+
+function toggleMute(){
+    muted = !muted;
+}
+
+socket.on("perf", function(data){
+
+    document.getElementById("device-info").innerHTML =
+        `${data.device} | ${data.fps} FPS | ${data.inference_ms}ms`;
+
+});
+
+socket.on("state_update", function(data){
+
+    const workers = data.workers;
+
+    const grid = document.getElementById("worker-grid");
+
+    grid.innerHTML = "";
+
+    let active = 0;
+    let idle = 0;
+    let alarms = 0;
+
+    workers.forEach(w => {
+
+        if(w.status === "active") active++;
+        if(w.status === "idle") idle++;
+        if(w.status === "alarm") alarms++;
+
+        const card = document.createElement("div");
+
+        card.className = `worker ${w.status}`;
+
+        let percent = Math.min(100, (w.idle_secs / 120) * 100);
+
+        let color =
+            w.status === "active" ? "#3fb950" :
+            w.status === "idle" ? "#d29922" :
+            "#f85149";
+
+        card.innerHTML = `
+
+            <div class="worker-id">${w.id}</div>
+
+            <div class="worker-zone">
+                ${w.zone}
+            </div>
+
+            <div class="status ${w.status}">
+                ${w.status.toUpperCase()}
+            </div>
+
+            <div class="timer">
+                Idle: ${w.idle_secs}s
+            </div>
+
+            <div class="progress">
+                <div class="progress-bar"
+                     style="width:${percent}%; background:${color}">
+                </div>
+            </div>
+
+        `;
+
+        grid.appendChild(card);
+
+        if(w.status === "alarm"){
+
+            totalAlarms++;
+
+            document.getElementById("alarm-banner")
+                .classList.add("show");
+
+            document.getElementById("alarm-text")
+                .innerHTML =
+                `${w.id} idle for ${w.idle_secs}s`;
+
+            speak(`Please work ${w.id}`);
+
+        }
+
+    });
+
+    if(alarms === 0){
+
+        document.getElementById("alarm-banner")
+            .classList.remove("show");
+    }
+
+    document.getElementById("total-workers").innerHTML = workers.length;
+    document.getElementById("active-workers").innerHTML = active;
+    document.getElementById("idle-workers").innerHTML = idle;
+    document.getElementById("alarm-workers").innerHTML = alarms;
+
+});
+
+socket.on("worker_entered", function(data){
+
+    addLog(`${data.worker_id} entered`);
+
+});
+
+socket.on("worker_left", function(data){
+
+    addLog(`${data.worker_id} left`);
+
+});
+
+socket.on("worker_idle", function(data){
+
+    addLog(`${data.worker_id} became idle`);
+
+});
+
+socket.on("alarm", function(data){
+
+    addLog(`ALARM: ${data.worker_id}`);
+
+});
+
+</script>
+
+</body>
+</html>
